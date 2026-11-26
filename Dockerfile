@@ -7,8 +7,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrandr2 xdg-utils && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+RUN pip install --upgrade pip
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
 RUN playwright install chromium --with-deps
 
 COPY app.py .
