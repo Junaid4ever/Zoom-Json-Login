@@ -7,7 +7,7 @@ import uvicorn
 RAILWAY = os.environ.get("CENTRAL_SERVER", "https://zoom-server-new.up.railway.app").rstrip("/")
 EMAIL = os.environ.get("ZOOM_EMAIL", "").strip()
 PASSWORD = os.environ.get("ZOOM_PASSWORD", "").strip()
-CHECK_EVERY = int(os.environ.get("CHECK_INTERVAL", "30"))  # seconds between checks
+CHECK_EVERY = int(os.environ.get("CHECK_INTERVAL", "30"))
 SECRET = os.environ.get("KEEPER_SECRET", "keeper-secret-change-me")
 PROFILE_DIR = "/tmp/zoom_profile"
 
@@ -37,6 +37,30 @@ async def is_valid(cookies_data):
     except Exception:
         return False
 
+async def safe_fill(page, selectors, value, timeout=8000):
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            await loc.wait_for(state="visible", timeout=timeout)
+            await loc.click(force=True, timeout=5000)
+            await loc.fill("")
+            await loc.fill(value)
+            return True
+        except Exception:
+            continue
+    return False
+
+async def safe_click(page, selectors, timeout=8000):
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            await loc.wait_for(state="visible", timeout=timeout)
+            await loc.click(force=True, timeout=5000)
+            return True
+        except Exception:
+            continue
+    return False
+
 async def do_login_and_save():
     os.makedirs(PROFILE_DIR, exist_ok=True)
     async with async_playwright() as p:
@@ -54,46 +78,66 @@ async def do_login_and_save():
         page = context.pages[0] if context.pages else await context.new_page()
         try:
             await page.goto("https://zoom.us/signin#/login", wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(2500)
-
-            # Email
-            email_field = page.locator('//*[@id="email"]')
-            await email_field.click()
-            await email_field.fill("")
-            for ch in EMAIL:
-                await email_field.type(ch, delay=60)
-            await page.wait_for_timeout(600)
-
-            # Next
-            await page.locator('//*[@id="signin_btn_next"]/span').click()
             await page.wait_for_timeout(3000)
 
-            # Password
-            pwd_field = page.locator('//*[@id="password"]')
-            await pwd_field.click()
-            await pwd_field.fill("")
-            for ch in PASSWORD:
-                await pwd_field.type(ch, delay=60)
-            await page.wait_for_timeout(500)
+            # Email
+            ok = await safe_fill(page, [
+                '//*[@id="email"]',
+                '#email',
+                'input[name="account"]',
+                'input[type="email"]',
+            ], EMAIL)
+            if not ok:
+                print("Email field not filled")
+                return None
+            await page.wait_for_timeout(800)
 
-            # Login
-            await page.locator('//*[@id="js_btn_login"]').click()
-            await page.wait_for_timeout(8000)
+            # Next button
+            await safe_click(page, [
+                '//*[@id="signin_btn_next"]',
+                '//*[@id="signin_btn_next"]/span',
+                'button:has-text("Next")',
+                '#signin_btn_next',
+            ])
+            await page.wait_for_timeout(3500)
+
+            # Password
+            ok = await safe_fill(page, [
+                '//*[@id="password"]',
+                '#password',
+                'input[name="password"]',
+                'input[type="password"]',
+            ], PASSWORD)
+            if not ok:
+                print("Password field not filled")
+                return None
+            await page.wait_for_timeout(600)
+
+            # Login button
+            await safe_click(page, [
+                '//*[@id="js_btn_login"]',
+                'button:has-text("Sign In")',
+                'button[type="submit"]',
+                '#js_btn_login',
+            ])
+            await page.wait_for_timeout(10000)
 
             url = page.url.lower()
             if "signin" in url or "login" in url:
-                print("Login may have failed. URL:", page.url)
+                print("Still on login page. URL:", page.url)
                 return None
 
-            # Save storage state
             state = await context.storage_state()
-            # Extend short-lived cookies
             now = time.time()
             for c in state.get("cookies", []):
                 exp = c.get("expires", -1)
                 if exp == -1 or exp < now + 72 * 3600:
                     c["expires"] = now + 72 * 3600
+            print(f"Login OK, cookies: {len(state.get('cookies', []))}")
             return state
+        except Exception as e:
+            print("Login exception:", str(e)[:200])
+            return None
         finally:
             await context.close()
 
@@ -123,7 +167,6 @@ async def keeper_loop():
                 need_login = False
                 print("Session valid")
             else:
-                # Try fetching current from server
                 try:
                     async with httpx.AsyncClient(timeout=15) as c:
                         r = await c.get(f"{RAILWAY}/session")
@@ -149,7 +192,7 @@ async def keeper_loop():
                 else:
                     print("Login failed")
         except Exception as e:
-            print("Loop error:", str(e)[:180])
+            print("Loop error:", str(e)[:200])
         await asyncio.sleep(CHECK_EVERY)
 
 @app.on_event("startup")
